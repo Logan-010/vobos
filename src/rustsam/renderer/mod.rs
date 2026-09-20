@@ -2,8 +2,6 @@ use std::cmp::Ordering;
 
 use crate::parser::Phoneme;
 
-mod tests;
-
 // Frequency data for each of the three formant waveforms
 const FREQUENCY_DATA: (&[u8], &[u8], &[u8]) = (
     &[
