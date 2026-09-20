@@ -1,6 +1,7 @@
 mod agent;
 mod cli;
 mod config;
+mod mcp;
 mod sam;
 mod whisper;
 
@@ -48,12 +49,25 @@ async fn main() -> color_eyre::Result<()> {
         }
     };
 
+    let mcp_path = cli.mcp_config.clone().unwrap_or_else(|| {
+        ProjectDirs::from("com", "seedse", "vobos")
+            .expect("Expected project directories")
+            .config_dir()
+            .join("mcp.toml")
+    });
+    let mcp_config = if fs::try_exists(&mcp_path).await? {
+        mcp::McpConfig::load(&mcp_path).await?
+    } else {
+        mcp::McpConfig::default()
+    };
+
     tracing::info!("Initializing TTS...");
     let (sam, playback_active) = sam::init_task()?;
     let session_id = Arc::new(Mutex::new("default".to_owned()));
 
     tracing::info!("Initializing LLM...");
-    let agent = agent::build(&config, sam, Arc::clone(&session_id)).await?;
+    let (agent, _mcp_connections) =
+        agent::build(&config, sam, Arc::clone(&session_id), mcp_config).await?;
 
     tracing::info!("Initializing STT...");
     let whisper = Whisper::new(&config).await?;

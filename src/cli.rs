@@ -15,6 +15,10 @@ pub struct Cli {
     #[arg(long, short = 'c', env = "VOBOS_CONFIG")]
     pub config: Option<PathBuf>,
 
+    /// Custom MCP config path
+    #[arg(long, env = "VOBOS_MCP_CONFIG")]
+    pub mcp_config: Option<PathBuf>,
+
     /// Huggingface repo
     #[arg(long, short = 'r', env = "VOBOS_STT_REPO")]
     pub repo: Option<String>,
