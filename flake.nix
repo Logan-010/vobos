@@ -54,6 +54,7 @@
 
         buildInputs = with pkgs; [
           alsa-lib
+          libxkbcommon
           stdenv.cc.cc.lib
           vulkan-loader
         ];

@@ -1,7 +1,7 @@
 use crate::{
     agent::{
         consts::PREAMBLE,
-        tools::{Cmd, NewSession, Say},
+        tools::{Cmd, Input, NewSession, Say},
     },
     config::Config,
     mcp::{Connections, McpConfig},
@@ -32,6 +32,7 @@ pub async fn build(
         .tool(Say::new(sam))
         .tool(Cmd)
         .tool(NewSession::new(session_id))
+        .tool(Input::new()?)
         .run();
     let connections = Connections::connect(mcp_config, tool_server.clone()).await?;
 

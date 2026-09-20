@@ -6,3 +6,6 @@ pub use cmd::Cmd;
 
 mod new_session;
 pub use new_session::NewSession;
+
+mod input;
+pub use input::Input;
