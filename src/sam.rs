@@ -6,7 +6,10 @@ use cpal::{
 use std::{
     collections::VecDeque,
     error::Error,
-    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use rustsam::{parser, reciter, renderer};
@@ -15,26 +18,22 @@ use tokio::{sync::mpsc, task};
 const SAM_SAMPLE_RATE: u32 = 22_050;
 const CHANNEL_CAPACITY: usize = 16;
 
-pub struct Sam;
+pub fn init_task() -> color_eyre::Result<(mpsc::Sender<String>, Arc<AtomicBool>)> {
+    let (tx, mut rx) = mpsc::channel::<String>(CHANNEL_CAPACITY);
+    let playback_active = Arc::new(AtomicBool::new(false));
+    let worker_playback_active = Arc::clone(&playback_active);
 
-impl Sam {
-    pub fn new() -> color_eyre::Result<(mpsc::Sender<String>, Arc<AtomicBool>)> {
-        let (tx, mut rx) = mpsc::channel::<String>(CHANNEL_CAPACITY);
-        let playback_active = Arc::new(AtomicBool::new(false));
-        let worker_playback_active = Arc::clone(&playback_active);
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<color_eyre::Result<()>>(1);
 
-        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<color_eyre::Result<()>>(1);
+    task::spawn_blocking(move || {
+        if let Err(err) = run_audio_worker(&mut rx, ready_tx, worker_playback_active) {
+            tracing::error!("SAM audio worker stopped: {err}");
+        }
+    });
 
-        task::spawn_blocking(move || {
-            if let Err(err) = run_audio_worker(&mut rx, ready_tx, worker_playback_active) {
-                tracing::error!("SAM audio worker stopped: {err}");
-            }
-        });
+    ready_rx.recv()??;
 
-        ready_rx.recv()??;
-
-        Ok((tx, playback_active))
-    }
+    Ok((tx, playback_active))
 }
 
 fn run_audio_worker(

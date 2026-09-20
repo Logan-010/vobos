@@ -8,12 +8,17 @@ use hf_hub::{
     progress::{DownloadEvent, ProgressEvent, ProgressHandler},
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use std::{path::PathBuf, sync::{Arc, atomic::{AtomicBool, Ordering}}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use tokio::{
     sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
     task,
 };
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+
+use crate::config::Config;
 
 pub struct IndicatifProgress {
     pub pb: ProgressBar,
@@ -58,19 +63,17 @@ where
     'a: 'static,
     'b: 'static,
 {
-    pub async fn new(
-        repo: String,
-        file: String,
-        cache: Option<PathBuf>,
-    ) -> color_eyre::Result<Self> {
-        let mut iter = repo.split('/');
+    pub async fn new(config: &Config) -> color_eyre::Result<Self> {
+        whisper_rs::install_logging_hooks();
+
+        let mut iter = config.repo.split('/');
         let user = iter.next().context("Expected user before '/'")?;
         let repo_name = iter.next().context("Expected repo after '/'")?;
 
+        tracing::info!("Fetching model {} from {}...", config.model, config.repo);
+
         let client = HFClient::new()?;
         let repo = client.model(user, repo_name);
-
-        tracing::info!("Downloading model...");
 
         let pb = ProgressBar::new(0);
 
@@ -83,14 +86,14 @@ where
             .progress_chars("#>-"),
         );
 
-        pb.set_message(format!("Downloading {file}"));
+        pb.set_message(format!("Downloading {}", config.model));
 
         let progress = IndicatifProgress { pb: pb.clone() };
 
         let model_path = repo
             .download_file()
-            .maybe_local_dir(cache)
-            .filename(file)
+            .maybe_local_dir(config.cache.clone())
+            .filename(&config.model)
             .progress(progress)
             .send()
             .await?;
@@ -99,7 +102,7 @@ where
             pb.finish_and_clear();
         }
 
-        tracing::info!("Opening model...");
+        tracing::info!("Loading model...");
         let ctx = task::spawn_blocking(move || {
             WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
         })
@@ -178,6 +181,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_transcription_worker<'a, 'b>(
     device: cpal::Device,
     config: cpal::StreamConfig,
@@ -268,8 +272,6 @@ where
 
                         if !text.is_empty() {
                             let _ = segment_tx.send(SpeechSegment {
-                                start_ms: 0,
-                                end_ms: 0,
                                 text: text.to_owned(),
                             });
                         }
@@ -297,8 +299,6 @@ where
 
 #[derive(Debug)]
 pub struct SpeechSegment {
-    pub start_ms: u64,
-    pub end_ms: u64,
     pub text: String,
 }
 

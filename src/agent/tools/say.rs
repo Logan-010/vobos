@@ -1,6 +1,9 @@
 use rig::tool::{Tool, ToolContext};
 use serde::Deserialize;
-use std::{error::Error, fmt::{Display, Formatter}};
+use std::{
+    error::Error,
+    fmt::{Display, Formatter},
+};
 use tokio::sync::mpsc;
 
 pub struct Say {

@@ -1,16 +1,20 @@
 mod agent;
 mod cli;
+mod config;
 mod sam;
 mod whisper;
 
 use clap::Parser;
 use cli::Cli;
+use color_eyre::eyre::ContextCompat;
+use config::Config;
+use directories::ProjectDirs;
 use rig::completion::Prompt;
-use sam::Sam;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
+use tokio::fs;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use whisper::Whisper;
 
@@ -28,18 +32,36 @@ async fn main() -> color_eyre::Result<()> {
         eprintln!("Failed to initialize logger: {}", e);
     }
 
+    let config = match cli.config.as_ref() {
+        Some(p) => Config::load(p, &cli).await?,
+        None => {
+            let from = ProjectDirs::from("com", "seedse", "vobos")
+                .context("Expected project directories")?
+                .config_dir()
+                .join("config.toml");
+
+            if fs::try_exists(&from).await? {
+                Config::load(&from, &cli).await?
+            } else {
+                Config::from_cli(&cli)
+            }
+        }
+    };
+
     tracing::info!("Initializing TTS...");
-    let (sam, playback_active) = Sam::new()?;
+    let (sam, playback_active) = sam::init_task()?;
+    let session_id = Arc::new(Mutex::new("default".to_owned()));
 
     tracing::info!("Initializing LLM...");
-    let agent = agent::build(cli.ollama_base, cli.ollama_model, sam).await?;
+    let agent = agent::build(&config, sam, Arc::clone(&session_id)).await?;
 
     tracing::info!("Initializing STT...");
-    let whisper = Whisper::new(cli.repo, cli.model, cli.cache).await?;
+    let whisper = Whisper::new(&config).await?;
     let agent_running = Arc::new(AtomicBool::new(false));
 
     let mut rx = whisper.transcribe_mic(playback_active, Arc::clone(&agent_running))?;
 
+    tracing::info!("Starting vOBOS");
     while let Some(segment) = rx.recv().await {
         if segment.text == "[BLANK_AUDIO]" {
             continue;
@@ -49,7 +71,14 @@ async fn main() -> color_eyre::Result<()> {
 
         tracing::info!("Prompting LLM...");
         agent_running.store(true, Ordering::Release);
-        let result = agent.prompt(segment.text).await;
+        let conversation_id = session_id
+            .lock()
+            .map_err(|_| color_eyre::eyre::eyre!("Session state is unavailable"))?
+            .clone();
+        let result = agent
+            .prompt(segment.text)
+            .conversation(conversation_id)
+            .await;
         agent_running.store(false, Ordering::Release);
 
         let res = match result {

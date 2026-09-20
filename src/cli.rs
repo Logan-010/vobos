@@ -11,23 +11,27 @@ pub struct Cli {
     #[arg(long, short = 'L', env = "RUST_LOG", default_value_t = String::from(concat!(env!("CARGO_PKG_NAME"), "=info,warn")))]
     pub logging: String,
 
+    /// Custom config path
+    #[arg(long, short = 'c', env = "VOBOS_CONFIG")]
+    pub config: Option<PathBuf>,
+
     /// Huggingface repo
-    #[arg(long, short = 'r', env = "VOBOS_STT_REPO", default_value_t = String::from("ggerganov/whisper.cpp"))]
-    pub repo: String,
+    #[arg(long, short = 'r', env = "VOBOS_STT_REPO")]
+    pub repo: Option<String>,
 
     /// Model name
-    #[arg(long, short = 'm', env = "VOBOS_STT_MODEL", default_value_t = String::from("ggml-base.en.bin"))]
-    pub model: String,
+    #[arg(long, short = 'm', env = "VOBOS_STT_MODEL")]
+    pub model: Option<String>,
 
     /// Model cache path
-    #[arg(long, short = 'c', env = "VOBOS_STT_CACHE")]
+    #[arg(long, short = 'C', env = "VOBOS_STT_CACHE")]
     pub cache: Option<PathBuf>,
 
     /// Ollama base url
-    #[arg(long, short = 'o', env = "OLLAMA_URL", default_value_t = String::from("http://localhost:11434"))]
-    pub ollama_base: String,
+    #[arg(long, short = 'o', env = "OLLAMA_URL")]
+    pub ollama_base: Option<String>,
 
     /// Ollama model
-    #[arg(long,short =  'M', env = "VOBOS_LLM_MODEL", default_value_t = String::from("qwen3.6:latest"))]
-    pub ollama_model: String,
+    #[arg(long, short = 'M', env = "VOBOS_LLM_MODEL")]
+    pub ollama_model: Option<String>,
 }
