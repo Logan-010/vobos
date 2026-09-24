@@ -1,7 +1,10 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod agent;
 mod audio;
 mod cli;
 mod config;
+mod gui;
 mod mcp;
 mod sam;
 mod whisper;
@@ -20,8 +23,7 @@ use tokio::fs;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use whisper::Whisper;
 
-#[tokio::main]
-async fn main() -> color_eyre::Result<()> {
+fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
 
     let cli = Cli::parse();
@@ -34,8 +36,19 @@ async fn main() -> color_eyre::Result<()> {
         eprintln!("Failed to initialize logger: {}", e);
     }
 
+    if !cli.headless {
+        return gui::run(cli).map_err(|error| color_eyre::eyre::eyre!(error.to_string()));
+    }
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run_agent(cli))
+}
+
+async fn load_config(cli: &Cli) -> color_eyre::Result<(Config, mcp::McpConfig)> {
     let config = match cli.config.as_ref() {
-        Some(p) => Config::load(p, &cli).await?,
+        Some(p) => Config::load(p, cli).await?,
         None => {
             let from = ProjectDirs::from("com", "seedse", "vobos")
                 .context("Expected project directories")?
@@ -43,9 +56,9 @@ async fn main() -> color_eyre::Result<()> {
                 .join("config.toml");
 
             if fs::try_exists(&from).await? {
-                Config::load(&from, &cli).await?
+                Config::load(&from, cli).await?
             } else {
-                Config::from_cli(&cli)
+                Config::from_cli(cli)
             }
         }
     };
@@ -62,13 +75,19 @@ async fn main() -> color_eyre::Result<()> {
         mcp::McpConfig::default()
     };
 
+    Ok((config, mcp_config))
+}
+
+async fn run_agent(cli: Cli) -> color_eyre::Result<()> {
+    let (config, mcp_config) = load_config(&cli).await?;
+
     tracing::info!("Initializing TTS...");
     let (sam, playback_active) = sam::init_task()?;
     let session_id = Arc::new(Mutex::new("default".to_owned()));
 
     tracing::info!("Initializing LLM...");
     let (agent, _mcp_connections) =
-        agent::build(&config, sam, Arc::clone(&session_id), mcp_config).await?;
+        agent::build(&config, sam, Arc::clone(&session_id), mcp_config, None).await?;
 
     tracing::info!("Initializing STT...");
     let whisper = Whisper::new(

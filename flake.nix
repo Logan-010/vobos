@@ -55,6 +55,7 @@
         buildInputs = with pkgs; [
           alsa-lib
           libxkbcommon
+          wayland
           stdenv.cc.cc.lib
           vulkan-loader
         ];
@@ -69,6 +70,16 @@
           nativeBuildInputs = nativeBuildInputs ++ [ pkgs.autoPatchelfHook ];
 
           inherit buildInputs;
+
+          # Winit loads these libraries dynamically on Wayland.
+          runtimeDependencies = with pkgs; [ wayland libxkbcommon ];
+
+          postInstall = ''
+            install -Dm644 assets/com.seedse.vobos.desktop \
+              "$out/share/applications/com.seedse.vobos.desktop"
+            install -Dm644 assets/com.seedse.vobos.svg \
+              "$out/share/icons/hicolor/scalable/apps/com.seedse.vobos.svg"
+          '';
 
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
         };

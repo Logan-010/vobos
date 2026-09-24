@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=vOBOS
+GenericName=AI Agent
+Comment=Your personal AI agent
+Exec=vobos
+Icon=com.seedse.vobos
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=com.seedse.vobos

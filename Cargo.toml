@@ -10,6 +10,7 @@ name = "rustsam"
 path = "src/rustsam/lib.rs"
 
 [dependencies]
+iced = { version = "0.14.0", default-features = false, features = ["tokio", "svg", "markdown", "advanced"] }
 audioadapter-buffers = "5.2.0"
 rubato = "5.0.0"
 clap = { version = "4.6.7", features = ["derive", "env"] }
@@ -33,7 +34,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1.6"
 directories = "6.0.0"
-enigo = { version = "0.6.1", features = ["wayland"] }
+enigo = { version = "0.6.1" }
+
+[features]
+default = ["wayland", "wgpu"]
+wgpu = ["iced/wgpu"]
+tiny-skia = ["iced/tiny-skia"]
+x11 = ["enigo/x11rb", "iced/x11"]
+wayland = ["enigo/wayland", "iced/wayland"]
 
 [dev-dependencies]
 hound = "3.5.1"

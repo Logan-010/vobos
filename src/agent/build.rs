@@ -1,6 +1,6 @@
 use crate::{
     agent::{
-        consts::PREAMBLE,
+        consts::preamble,
         tools::{Cmd, Input, NewSession, Say},
     },
     config::Config,
@@ -18,6 +18,7 @@ pub async fn build(
     sam: mpsc::Sender<String>,
     session_id: Arc<Mutex<String>>,
     mcp_config: McpConfig,
+    responses: Option<mpsc::UnboundedSender<String>>,
 ) -> color_eyre::Result<(Agent, Connections)> {
     tracing::info!("Connecting to {}...", config.ollama_base);
 
@@ -28,8 +29,9 @@ pub async fn build(
 
     tracing::info!("Using model {}...", config.ollama_model);
 
+    let instructions = preamble(responses.is_some());
     let tool_server = ToolServer::new()
-        .tool(Say::new(sam))
+        .tool(Say::new(sam, responses))
         .tool(Cmd)
         .tool(NewSession::new(session_id))
         .tool(Input::new()?)
@@ -39,7 +41,7 @@ pub async fn build(
     Ok((
         client
             .agent(&config.ollama_model)
-            .preamble(PREAMBLE)
+            .preamble(&instructions)
             .tool_server_handle(tool_server)
             .memory(InMemoryConversationMemory::new())
             .default_max_turns(25)
