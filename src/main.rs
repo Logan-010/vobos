@@ -1,4 +1,5 @@
 mod agent;
+mod audio;
 mod cli;
 mod config;
 mod mcp;
@@ -70,7 +71,12 @@ async fn main() -> color_eyre::Result<()> {
         agent::build(&config, sam, Arc::clone(&session_id), mcp_config).await?;
 
     tracing::info!("Initializing STT...");
-    let whisper = Whisper::new(&config).await?;
+    let whisper = Whisper::new(
+        config.repo.clone(),
+        config.model.clone(),
+        config.cache.clone(),
+    )
+    .await?;
     let agent_running = Arc::new(AtomicBool::new(false));
 
     let mut rx = whisper.transcribe_mic(playback_active, Arc::clone(&agent_running))?;
