@@ -22,6 +22,7 @@ pub enum Command {
     Prompt(String),
     Listen,
     StopListening,
+    Cancel,
     Retry,
 }
 
@@ -36,6 +37,7 @@ pub enum Event {
     ReplyUpdated { id: usize, text: String },
     Activity(String),
     Finished,
+    Cancelled,
     Error(String),
 }
 
@@ -45,10 +47,9 @@ struct Session {
     // MCP services must live for as long as the agent uses their tools.
     _connections: mcp::Connections,
     session_id: Arc<Mutex<String>>,
-    sam: mpsc::Sender<String>,
+    sam: sam::Speech,
     playback_active: Arc<AtomicBool>,
     agent_running: Arc<AtomicBool>,
-    replies: mpsc::UnboundedReceiver<String>,
 }
 
 impl Session {
@@ -56,13 +57,12 @@ impl Session {
         let (config, mcp_config) = crate::load_config(cli).await?;
         let (sam, playback_active) = tokio::task::spawn_blocking(sam::init_task).await??;
         let session_id = Arc::new(Mutex::new("default".to_owned()));
-        let (responses, replies) = mpsc::unbounded_channel();
         let (agent, connections) = agent::build(
             &config,
             sam.clone(),
             Arc::clone(&session_id),
             mcp_config,
-            Some(responses),
+            true,
         )
         .await?;
         Ok(Self {
@@ -73,7 +73,6 @@ impl Session {
             sam,
             playback_active,
             agent_running: Arc::new(AtomicBool::new(false)),
-            replies,
         })
     }
 
@@ -92,48 +91,64 @@ impl Session {
         self.agent_running.store(true, Ordering::Release);
         let _ = output.send(Event::Started(prompt.clone())).await;
         let mut control_output = output.clone();
-        let result = {
-            let completion = self.complete(prompt, output);
-            tokio::pin!(completion);
-            loop {
-                tokio::select! {
-                    result = &mut completion => break result,
-                    command = commands.recv() => match command {
-                        Some(Command::StopListening) => {
-                            *microphone = None;
-                            let _ = control_output.send(Event::Listening(false)).await;
-                        }
-                        // A typed prompt may race with the first voice event.
-                        // Preserve it for the next turn instead of dropping it.
-                        Some(command) => pending.push_back(command),
-                        None => break Ok(()),
-                    }
-                }
-            }
-        };
-        self.agent_running.store(false, Ordering::Release);
-        if let Err(error) = result {
-            let _ = output.send(Event::Error(format!("{error:#}"))).await;
+        let mut replies = StreamReplies::default();
+        let (responses, mut spoken) = mpsc::unbounded_channel();
+        let result = run_until_cancelled(
+            self.complete(prompt, output, &mut replies, responses, &mut spoken),
+            commands,
+            microphone,
+            pending,
+            &mut control_output,
+        )
+        .await;
+        // The completion future (and Rig stream) is dropped before acknowledging
+        // cancellation, including when it is stuck awaiting a model or tool.
+        if result.is_none() {
+            self.sam.cancel();
+            pending.retain(|command| !matches!(command, Command::Prompt(_)));
+            discard_pending(microphone);
         }
-        let _ = output.send(Event::Finished).await;
+        self.agent_running.store(false, Ordering::Release);
+        while let Ok(reply) = spoken.try_recv() {
+            replies.spoken(reply);
+        }
+        replies.flush(output).await;
+        match result {
+            Some(result) => {
+                if let Err(error) = result {
+                    let _ = output.send(Event::Error(format!("{error:#}"))).await;
+                }
+                let _ = output.send(Event::Finished).await;
+            }
+            None => {
+                let _ = output.send(Event::Cancelled).await;
+            }
+        }
     }
 
     async fn complete(
         &mut self,
         prompt: String,
         output: &mut Sender<Event>,
+        replies: &mut StreamReplies,
+        responses: mpsc::UnboundedSender<String>,
+        spoken: &mut mpsc::UnboundedReceiver<String>,
     ) -> color_eyre::Result<()> {
         let conversation = self
             .session_id
             .lock()
             .map_err(|_| color_eyre::eyre::eyre!("Session state is unavailable"))?
             .clone();
+        let speech = self.sam.current();
+        let mut context = rig::tool::ToolContext::new();
+        context.insert(speech.clone());
+        context.insert(responses);
         let mut stream = self
             .agent
             .stream_prompt(prompt)
             .conversation(conversation)
+            .tool_context(context)
             .await;
-        let mut replies = StreamReplies::default();
         // Bound UI updates to 20 Hz regardless of provider token speed. This
         // interval is local to the worker, not a window-event subscription.
         let mut frame = tokio::time::interval(Duration::from_millis(50));
@@ -149,23 +164,23 @@ impl Session {
                     Some(Err(error)) => break Err(error.into()),
                     None => break Ok(()),
                 },
-                Some(reply) = self.replies.recv() => {
+                Some(reply) = spoken.recv() => {
                     replies.spoken(reply);
                 },
                 _ = frame.tick() => replies.flush(output).await,
             }
         };
         // Preserve partial output on failure, including the last tool reply.
-        while let Ok(reply) = self.replies.try_recv() {
+        while let Ok(reply) = spoken.try_recv() {
             replies.spoken(reply);
         }
         replies.flush(output).await;
         result?;
-        let final_text = replies.final_text.ok_or_else(|| {
+        let final_text = replies.final_text.as_ref().ok_or_else(|| {
             color_eyre::eyre::eyre!("The agent stream ended before completing its response")
         })?;
         if !replies.used_say && !final_text.trim().is_empty() {
-            self.sam.send(final_text).await?;
+            speech.send(final_text.clone()).await?;
         }
         Ok(())
     }
@@ -259,6 +274,31 @@ impl StreamReplies {
 
 type Microphone = mpsc::UnboundedReceiver<crate::whisper::SpeechSegment>;
 
+async fn run_until_cancelled(
+    completion: impl std::future::Future<Output = color_eyre::Result<()>>,
+    commands: &mut mpsc::Receiver<Command>,
+    microphone: &mut Option<Microphone>,
+    pending: &mut VecDeque<Command>,
+    output: &mut Sender<Event>,
+) -> Option<color_eyre::Result<()>> {
+    tokio::pin!(completion);
+    loop {
+        tokio::select! {
+            biased;
+            command = commands.recv() => match command {
+                Some(Command::Cancel) | None => return None,
+                Some(Command::StopListening) => {
+                    *microphone = None;
+                    let _ = output.send(Event::Listening(false)).await;
+                }
+                // A typed prompt may race with the first voice event.
+                Some(command) => pending.push_back(command),
+            },
+            result = &mut completion => return Some(result),
+        }
+    }
+}
+
 pub async fn run(cli: Cli, mut commands: mpsc::Receiver<Command>, mut output: Sender<Event>) {
     let mut session = loop {
         let _ = output.send(Event::Initializing).await;
@@ -292,8 +332,14 @@ pub async fn run(cli: Cli, mut commands: mpsc::Receiver<Command>, mut output: Se
                     None => commands.recv().await,
                 }
             } => match command {
-                None => return,
+                None => { session.sam.cancel(); return; },
                 Some(Command::Retry) => {},
+                Some(Command::Cancel) => {
+                    session.sam.cancel();
+                    pending.retain(|command| !matches!(command, Command::Prompt(_)));
+                    discard_pending(&mut microphone);
+                    let _ = output.send(Event::Cancelled).await;
+                }
                 Some(Command::StopListening) => {
                     // Dropping the receiver stops the transcription worker and releases CPAL.
                     microphone = None;
@@ -306,16 +352,26 @@ pub async fn run(cli: Cli, mut commands: mpsc::Receiver<Command>, mut output: Se
                         session.config.model.clone(),
                         session.config.cache.clone(),
                     ).boxed();
+                    let mut cancelled = false;
                     let result = tokio::select! {
-                        result = loading => Some(result),
+                        biased;
                         command = commands.recv() => match command {
-                            None => return,
+                            None => { session.sam.cancel(); return; },
+                            Some(Command::Cancel) => {
+                                session.sam.cancel();
+                                cancelled = true;
+                                None
+                            }
                             // While loading, the UI exposes only Stop listening.
                             _ => None,
-                        }
+                        },
+                        result = loading => Some(result),
                     };
                     let Some(result) = result else {
                         let _ = output.send(Event::Listening(false)).await;
+                        if cancelled {
+                            let _ = output.send(Event::Cancelled).await;
+                        }
                         continue;
                     };
                     match result.and_then(|whisper| whisper.transcribe_mic(
@@ -369,6 +425,66 @@ fn discard_pending(microphone: &mut Option<Microphone>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancels_a_hanging_completion_and_preserves_unflushed_text() {
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = Dropped(dropped.clone());
+        let (commands, mut receiver) = mpsc::channel(8);
+        let (mut output, mut events) = iced::futures::channel::mpsc::channel(8);
+        let mut replies = StreamReplies::default();
+        let (started, running) = tokio::sync::oneshot::channel();
+        let completion = async {
+            let _guard = guard;
+            replies.push(delta("Partial"));
+            let _ = started.send(());
+            std::future::pending::<color_eyre::Result<()>>().await
+        };
+        let cancel = async {
+            running.await.unwrap();
+            commands.send(Command::Cancel).await.unwrap();
+        };
+        let mut microphone = None;
+        let mut pending = VecDeque::new();
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                run_until_cancelled(
+                    completion,
+                    &mut receiver,
+                    &mut microphone,
+                    &mut pending,
+                    &mut output
+                ),
+                cancel
+            )
+        })
+        .await
+        .expect("cancellation must not wait for completion");
+        assert!(result.is_none());
+        assert!(dropped.load(Ordering::Acquire));
+        replies.flush(&mut output).await;
+        assert!(
+            matches!(events.next().await, Some(Event::ReplyUpdated { text, .. }) if text == "Partial")
+        );
+        assert!(
+            run_until_cancelled(
+                async { Ok(()) },
+                &mut receiver,
+                &mut microphone,
+                &mut pending,
+                &mut output
+            )
+            .await
+            .unwrap()
+            .is_ok()
+        );
+    }
 
     fn delta(text: &str) -> MultiTurnStreamItem {
         MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::text(text))

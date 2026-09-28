@@ -56,6 +56,10 @@
           alsa-lib
           libxkbcommon
           wayland
+          libxcb
+          pipewire
+          libglvnd
+          libgbm
           stdenv.cc.cc.lib
           vulkan-loader
         ];

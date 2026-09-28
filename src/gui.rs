@@ -81,6 +81,7 @@ struct Home {
     phase: Phase,
     listening: bool,
     stopping_listening: bool,
+    cancelling: bool,
     window_opened: bool,
     activity: String,
     input: String,
@@ -98,6 +99,7 @@ enum Message {
     Input(String),
     Submit,
     ToggleListening,
+    Cancel,
     Retry,
     Tick,
     CopyReply(usize, usize),
@@ -119,6 +121,7 @@ impl Home {
                 phase: Phase::Initializing,
                 listening: false,
                 stopping_listening: false,
+                cancelling: false,
                 window_opened: false,
                 activity: "Thinking…".into(),
                 input: String::new(),
@@ -175,7 +178,11 @@ impl Home {
             }
             Message::MonitorSize(_, None) => {}
             Message::Input(input) => self.input = input,
-            Message::Submit if self.phase == Phase::Ready && !self.input.trim().is_empty() => {
+            Message::Submit
+                if self.phase == Phase::Ready
+                    && !self.cancelling
+                    && !self.input.trim().is_empty() =>
+            {
                 if self.send(Command::Prompt(self.input.trim().to_owned())) {
                     self.input.clear();
                     self.error = None;
@@ -183,8 +190,15 @@ impl Home {
                     self.phase = Phase::Processing;
                 }
             }
+            Message::Cancel if self.can_cancel() => {
+                if self.send(Command::Cancel) {
+                    self.cancelling = true;
+                    self.notice = Some("Stopping prompt and speech…".into());
+                }
+            }
             Message::ToggleListening
-                if !self.stopping_listening
+                if !self.cancelling
+                    && !self.stopping_listening
                     && (self.phase == Phase::LoadingSpeech
                         || (matches!(self.phase, Phase::Ready | Phase::Processing)
                             && self.listening)) =>
@@ -198,7 +212,9 @@ impl Home {
                     self.notice = Some("Stopping microphone…".into());
                 }
             }
-            Message::ToggleListening if self.phase == Phase::Ready && !self.stopping_listening => {
+            Message::ToggleListening
+                if self.phase == Phase::Ready && !self.stopping_listening && !self.cancelling =>
+            {
                 if self.send(Command::Listen) {
                     self.phase = Phase::LoadingSpeech;
                     self.error = None;
@@ -235,7 +251,17 @@ impl Home {
     fn handle_event(&mut self, event: Event) {
         match event {
             Event::Initializing => self.phase = Phase::Initializing,
-            Event::Ready | Event::Finished => self.phase = Phase::Ready,
+            Event::Ready | Event::Finished => {
+                if !self.cancelling {
+                    self.phase = Phase::Ready;
+                }
+            }
+            Event::Cancelled => {
+                self.cancelling = false;
+                self.phase = Phase::Ready;
+                self.activity = "Thinking…".into();
+                self.notice = Some("Prompt and speech stopped.".into());
+            }
             Event::InitializationFailed(error) => {
                 self.phase = Phase::Unavailable;
                 self.error = Some(error);
@@ -256,7 +282,9 @@ impl Home {
             Event::Started(prompt) => {
                 self.phase = Phase::Processing;
                 self.error = None;
-                self.notice = None;
+                if !self.cancelling {
+                    self.notice = None;
+                }
                 self.turns.push(Turn {
                     prompt,
                     replies: Vec::new(),
@@ -274,6 +302,10 @@ impl Home {
             Event::Activity(activity) => self.activity = activity,
             Event::Error(error) => self.error = Some(error),
         }
+    }
+
+    fn can_cancel(&self) -> bool {
+        !self.cancelling && matches!(self.phase, Phase::Processing | Phase::Ready)
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -373,7 +405,8 @@ impl Home {
             scrollable(history).anchor_bottom().height(Fill).into()
         };
 
-        let can_send = self.phase == Phase::Ready && !self.input.trim().is_empty();
+        let can_send =
+            self.phase == Phase::Ready && !self.cancelling && !self.input.trim().is_empty();
         let input = text_input("Type a command…", &self.input)
             .on_input(Message::Input)
             .on_submit_maybe(can_send.then_some(Message::Submit))
@@ -388,7 +421,8 @@ impl Home {
         } else {
             "Begin listening"
         };
-        let can_listen = !self.stopping_listening
+        let can_listen = !self.cancelling
+            && !self.stopping_listening
             && (matches!(self.phase, Phase::Ready | Phase::LoadingSpeech)
                 || (self.phase == Phase::Processing && self.listening));
         let microphone_icon = svg(svg::Handle::from_memory(include_bytes!(
@@ -426,7 +460,15 @@ impl Home {
         if self.phase == Phase::Unavailable {
             layout = layout.push(button("Retry initialization").on_press(Message::Retry));
         }
-        layout = layout.push(row![input, send].spacing(8)).push(
+        let stop = button(if self.cancelling {
+            "Stopping…"
+        } else {
+            "Stop (Esc)"
+        })
+        .style(button::danger)
+        .padding(10)
+        .on_press_maybe(self.can_cancel().then_some(Message::Cancel));
+        layout = layout.push(row![input, send, stop].spacing(8)).push(
             row![listen, text(status).size(11).width(Fill)]
                 .spacing(12)
                 .align_y(Alignment::Center),
@@ -434,6 +476,7 @@ impl Home {
         shortcut::space(
             container(layout).padding(16).width(Fill).height(Fill),
             Message::ToggleListening,
+            self.can_cancel().then_some(Message::Cancel),
         )
     }
 }
@@ -442,6 +485,37 @@ impl Home {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn cancellation_waits_for_ack_preserves_draft_and_partial_reply_and_allows_retry() {
+        let (mut home, _task) = Home::new(Cli::parse_from(["vobos"]));
+        // Keep the command receiver alive without running a real agent.
+        let (sender, mut commands) = mpsc::channel(8);
+        home.commands = sender;
+        home.handle_event(Event::Started("Hanging prompt".into()));
+        home.handle_event(Event::ReplyUpdated {
+            id: 0,
+            text: "Partial reply".into(),
+        });
+        home.input = "Next prompt".into();
+        let _ = home.update(Message::Cancel);
+        assert!(matches!(commands.try_recv(), Ok(Command::Cancel)));
+        assert!(home.cancelling);
+        assert!(!home.can_cancel());
+        home.handle_event(Event::Finished); // A completion raced with Stop.
+        let _ = home.update(Message::Submit);
+        assert!(commands.try_recv().is_err());
+        assert_eq!(home.input, "Next prompt");
+        home.handle_event(Event::Cancelled);
+        assert_eq!(home.phase, Phase::Ready);
+        assert_eq!(home.turns[0].replies[0].source, "Partial reply");
+        assert!(
+            home.can_cancel(),
+            "Stop must also work during post-response speech"
+        );
+        let _ = home.update(Message::Submit);
+        assert!(matches!(commands.try_recv(), Ok(Command::Prompt(text)) if text == "Next prompt"));
+    }
 
     #[test]
     fn prompts_are_serialized_and_replies_preserved_after_failure() {

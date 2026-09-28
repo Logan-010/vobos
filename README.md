@@ -21,7 +21,7 @@ as headless mode. Ollama must be running with your configured model available.
   Cancel listening also cancels model preparation. Starting again reloads the
   speech models from the cache.
 - **Space shortcut:** press Space to toggle listening when the typing box is not
-  focused. Click outside the box or press Escape to leave it. Space still inserts
+   focused. Click outside the box to leave it. Space still inserts
   spaces while typing; holding it down or using modifier keys does not repeatedly
   toggle listening. You can stop an active microphone while a reply is streaming.
 - **Processing:** initialization and speech-model preparation have a loading
@@ -31,7 +31,14 @@ as headless mode. Ollama must be running with your configured model available.
 - **Streamed replies:** the GUI uses Rig's `stream_prompt` API to display text
   as it arrives, with Markdown headings, lists, emphasis, and code blocks. Updates
   are batched at 50 ms intervals and Markdown is parsed incrementally. Partial
-  replies remain visible if a request fails.
+   replies remain visible if a request fails.
+- **Stop (Esc):** click Stop or press Escape while the window is focused to cancel
+   an active prompt and stop speech. Escape also works while typing in the input
+   box. Partial replies and your draft are preserved, and you can submit another
+   prompt once cancellation is acknowledged. Stop remains available after a reply
+   finishes to silence its playback; queued speech from the cancelled turn is
+   discarded. Stopping a prompt does not turn off the microphone—use Stop listening
+   for that. Already-started external tool actions may continue independently.
 - **Speech playback:** the GUI asks the agent to return text directly and queues
   the completed response through SAM. Explicit `say` tool replies are also shown,
   with duplicate display/playback suppressed. Headless mode retains its voice-first
@@ -57,6 +64,41 @@ cargo run --release -- --headless
 # Existing agent options still work:
 cargo run --release -- --headless --config /path/to/config.toml
 ```
+
+### Image interpretation
+
+With a vision-capable Ollama model, ask the agent to inspect a local image, for
+example: `Describe the image at /home/me/Pictures/photo.png`.
+
+The `image` tool accepts `{"path":"/path/to/image.png"}` and loads PNG, JPEG,
+GIF, or WebP files up to 20 MiB. Relative paths resolve from the application's
+working directory. For a URL, the agent can use `cmd` to save an image first,
+then open it with `image`. For the current screen, use `screencap` directly.
+
+Images are sent as visual input on the next model turn and remain available in
+conversation history. This works in both GUI and headless mode; format support
+also depends on the selected Ollama model.
+
+### Screen capture
+
+Ask the agent to inspect the screen, for example: `What is on my screen?`.
+The `screencap` tool uses xcap and returns a PNG directly as visual input, without
+saving a screenshot to disk. Call it with `{}` for the primary monitor (falling
+back to the first), or `{"monitor": 1}` for a specific zero-based monitor index.
+The result includes the monitor name, image dimensions, and available index range.
+
+Screen capture is enabled by either the `wayland` or `x11` Cargo feature. xcap
+detects the active session at runtime; its Linux backend dependencies are bundled
+together even when only one project feature is enabled. For an X11-only build:
+
+```sh
+cargo run --release --no-default-features --features x11,wgpu
+```
+
+Linux builds need XCB, Wayland, PipeWire, EGL, and GBM development libraries;
+the Nix shell supplies them. On Wayland, capture depends on the compositor's
+capture protocols or a working desktop portal, which may show a capture dialog.
+Capture and PNG encoding run on a blocking worker so the GUI stays responsive.
 
 ### GUI dependencies
 

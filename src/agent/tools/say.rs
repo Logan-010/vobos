@@ -7,7 +7,7 @@ use std::{
 use tokio::sync::mpsc;
 
 pub struct Say {
-    sam: mpsc::Sender<String>,
+    sam: crate::sam::Speech,
     responses: Option<mpsc::UnboundedSender<String>>,
 }
 
@@ -28,10 +28,7 @@ impl Display for SayError {
 impl Error for SayError {}
 
 impl Say {
-    pub fn new(
-        sam: mpsc::Sender<String>,
-        responses: Option<mpsc::UnboundedSender<String>>,
-    ) -> Self {
+    pub fn new(sam: crate::sam::Speech, responses: Option<mpsc::UnboundedSender<String>>) -> Self {
         Self { sam, responses }
     }
 }
@@ -61,14 +58,25 @@ impl Tool for Say {
 
     async fn call(
         &self,
-        _context: &mut ToolContext,
+        context: &mut ToolContext,
         args: Self::Args,
     ) -> Result<Self::Output, Self::Error> {
-        // The GUI must see tool-delivered replies even if audio playback fails.
-        if let Some(responses) = &self.responses {
+        let speech = context
+            .get::<crate::sam::Speech>()
+            .cloned()
+            .unwrap_or_else(|| self.sam.current());
+        if speech.is_cancelled() {
+            return Err(SayError("Speech cancelled".into()));
+        }
+        // Each GUI run supplies its own response channel, so late tool results
+        // cannot appear in a subsequent prompt after cancellation.
+        if let Some(responses) = context
+            .get::<mpsc::UnboundedSender<String>>()
+            .or(self.responses.as_ref())
+        {
             let _ = responses.send(args.text.clone());
         }
-        self.sam
+        speech
             .send(args.text)
             .await
             .map_err(|error| SayError(format!("Could not queue speech: {error}")))?;
@@ -82,22 +90,45 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn cancelled_turn_cannot_speak_or_publish_a_late_reply() {
+        let (sam, mut audio) = crate::sam::speech_channel();
+        let (responses, mut gui) = mpsc::unbounded_channel::<String>();
+        let say = Say::new(sam.clone(), None);
+        let mut context = ToolContext::new();
+        context.insert(sam.current());
+        context.insert(responses);
+        sam.cancel();
+        assert!(
+            say.call(
+                &mut context,
+                SayArgs {
+                    text: "Late reply".into()
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert!(audio.try_recv().is_err());
+        assert!(gui.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn spoken_reply_is_also_delivered_to_the_gui() {
-        let (sam, mut audio) = mpsc::channel(1);
+        let (sam, mut audio) = crate::sam::speech_channel();
         let (responses, mut gui) = mpsc::unbounded_channel();
         let say = Say::new(sam, Some(responses));
         let text = "## Result\n\nThe task is **complete**.";
         say.call(&mut ToolContext::new(), SayArgs { text: text.into() })
             .await
             .expect("speech queued");
-        assert_eq!(audio.recv().await.as_deref(), Some(text));
+        assert_eq!(audio.recv().await.unwrap().text, text);
         assert_eq!(gui.recv().await.as_deref(), Some(text));
         assert!(gui.try_recv().is_err());
     }
 
     #[tokio::test]
     async fn audio_failure_does_not_hide_the_text_reply() {
-        let (sam, audio) = mpsc::channel(1);
+        let (sam, audio) = crate::sam::speech_channel();
         drop(audio);
         let (responses, mut gui) = mpsc::unbounded_channel();
         let say = Say::new(sam, Some(responses));

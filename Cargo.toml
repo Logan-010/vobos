@@ -10,6 +10,7 @@ name = "rustsam"
 path = "src/rustsam/lib.rs"
 
 [dependencies]
+base64 = "0.22"
 iced = { version = "0.14.0", default-features = false, features = ["tokio", "svg", "markdown", "advanced"] }
 audioadapter-buffers = "5.2.0"
 rubato = "5.0.0"
@@ -18,7 +19,7 @@ color-eyre = "0.6.5"
 cpal = "0.18.2"
 hf-hub = "1.0.0"
 indicatif = "0.18.6"
-tokio = { version = "1.53.1", features = ["signal", "rt-multi-thread", "macros", "fs"] }
+tokio = { version = "1.53.1", features = ["signal", "rt-multi-thread", "macros", "fs", "io-util"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 whisper-rs = { version = "0.16.0", features = ["tracing_backend", "vulkan", "openmp"] }
@@ -35,16 +36,18 @@ serde_json = "1"
 toml = "1.1.6"
 directories = "6.0.0"
 enigo = { version = "0.6.1" }
+xcap = { version = "0.9.8", default-features = false, optional = true }
 
 [features]
 default = ["wayland", "wgpu"]
 wgpu = ["iced/wgpu"]
 tiny-skia = ["iced/tiny-skia"]
-x11 = ["enigo/x11rb", "iced/x11"]
-wayland = ["enigo/wayland", "iced/wayland"]
+x11 = ["enigo/x11rb", "iced/x11", "dep:xcap"]
+wayland = ["enigo/wayland", "iced/wayland", "dep:xcap"]
 
 [dev-dependencies]
 hound = "3.5.1"
+tempfile = "3"
 
 [profile.release]
 lto = "fat"

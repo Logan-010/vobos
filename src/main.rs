@@ -14,7 +14,8 @@ use cli::Cli;
 use color_eyre::eyre::ContextCompat;
 use config::Config;
 use directories::ProjectDirs;
-use rig::completion::Prompt;
+use iced::futures::StreamExt;
+use rig::{agent::MultiTurnStreamItem, streaming::StreamingPrompt};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -87,7 +88,7 @@ async fn run_agent(cli: Cli) -> color_eyre::Result<()> {
 
     tracing::info!("Initializing LLM...");
     let (agent, _mcp_connections) =
-        agent::build(&config, sam, Arc::clone(&session_id), mcp_config, None).await?;
+        agent::build(&config, sam, Arc::clone(&session_id), mcp_config, false).await?;
 
     tracing::info!("Initializing STT...");
     let whisper = Whisper::new(
@@ -114,21 +115,23 @@ async fn run_agent(cli: Cli) -> color_eyre::Result<()> {
             .lock()
             .map_err(|_| color_eyre::eyre::eyre!("Session state is unavailable"))?
             .clone();
-        let result = agent
-            .prompt(segment.text)
+        let mut stream = agent
+            .stream_prompt(segment.text)
             .conversation(conversation_id)
             .await;
-        agent_running.store(false, Ordering::Release);
-
-        let res = match result {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!("Agent error: {}", e);
-                continue;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(MultiTurnStreamItem::FinalResponse(response)) => {
+                    tracing::info!("LLM result: {}", response.output);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!("Agent error: {error}");
+                    break;
+                }
             }
-        };
-
-        tracing::info!("LLM result: {}", res);
+        }
+        agent_running.store(false, Ordering::Release);
     }
 
     Ok(())

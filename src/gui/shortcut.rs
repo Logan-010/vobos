@@ -1,4 +1,4 @@
-//! Handle shortcuts after child widgets, without subscribing to the global
+//! Handle shortcuts in the widget tree, without subscribing to the global
 //! window-event bus (which also carries high-frequency scrolling events).
 
 use iced::advanced::{
@@ -10,16 +10,19 @@ use iced::{Element, Event, Length, Rectangle, Size, Vector, keyboard};
 pub fn space<'a, Message: Clone + 'a, Theme: 'a, Renderer: renderer::Renderer + 'a>(
     content: impl Into<Element<'a, Message, Theme, Renderer>>,
     on_space: Message,
+    on_escape: Option<Message>,
 ) -> Element<'a, Message, Theme, Renderer> {
     Element::new(Shortcut {
         content: content.into(),
         on_space,
+        on_escape,
     })
 }
 
 struct Shortcut<'a, Message, Theme, Renderer> {
     content: Element<'a, Message, Theme, Renderer>,
     on_space: Message,
+    on_escape: Option<Message>,
 }
 
 fn is_space_shortcut(event: &Event, captured: bool) -> bool {
@@ -28,6 +31,13 @@ fn is_space_shortcut(event: &Event, captured: bool) -> bool {
         key, modifiers, repeat: false, ..
     }) if modifiers.is_empty() && matches!(key.as_ref(),
         keyboard::Key::Named(keyboard::key::Named::Space) | keyboard::Key::Character(" ")))
+}
+
+fn is_escape_shortcut(event: &Event) -> bool {
+    matches!(event, Event::Keyboard(keyboard::Event::KeyPressed {
+        key: keyboard::Key::Named(keyboard::key::Named::Escape),
+        modifiers, repeat: false, ..
+    }) if modifiers.is_empty())
 }
 
 impl<Message: Clone, Theme, Renderer: renderer::Renderer> Widget<Message, Theme, Renderer>
@@ -79,6 +89,15 @@ impl<Message: Clone, Theme, Renderer: renderer::Renderer> Widget<Message, Theme,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        // Escape cancels even when a text field has focus. Process it before
+        // the child can consume it to unfocus the input; Space remains child-first.
+        if is_escape_shortcut(event) {
+            if let Some(message) = &self.on_escape {
+                shell.publish(message.clone());
+                shell.capture_event();
+                return;
+            }
+        }
         self.content.as_widget_mut().update(
             &mut tree.children[0],
             event,
@@ -201,11 +220,12 @@ mod tests {
         enum Message {
             Input(String),
             Toggle,
+            Cancel,
         }
 
         let input = iced::widget::TextInput::<Message, iced::Theme, ()>::new("Command", "")
             .on_input(Message::Input);
-        let mut element = space(input, Message::Toggle);
+        let mut element = space(input, Message::Toggle, Some(Message::Cancel));
         let widget = element.as_widget_mut();
         let mut tree = Tree::new(&*widget);
         let layout = widget.layout(
@@ -229,6 +249,37 @@ mod tests {
             &Rectangle::with_size(Size::new(400.0, 100.0)),
         );
         assert_eq!(messages, vec![Message::Input(" ".into())]);
+
+        messages.clear();
+        let escape = Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            modified_key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Escape),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::empty(),
+            text: None,
+            repeat: false,
+        });
+        widget.update(
+            &mut tree,
+            &escape,
+            Layout::new(&layout),
+            mouse::Cursor::Unavailable,
+            &(),
+            &mut iced::advanced::clipboard::Null,
+            &mut Shell::new(&mut messages),
+            &Rectangle::with_size(Size::new(400.0, 100.0)),
+        );
+        assert_eq!(
+            messages,
+            vec![Message::Cancel],
+            "Escape must cancel even while typing"
+        );
+        let mut repeated_escape = escape.clone();
+        if let Event::Keyboard(keyboard::Event::KeyPressed { repeat, .. }) = &mut repeated_escape {
+            *repeat = true;
+        }
+        assert!(!is_escape_shortcut(&repeated_escape));
 
         messages.clear();
         tree.children[0]

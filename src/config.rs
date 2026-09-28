@@ -6,7 +6,7 @@ use tokio::fs;
 const DEFAULT_REPO: &str = "ggerganov/whisper.cpp";
 const DEFAULT_MODEL: &str = "ggml-base.en.bin";
 const DEFAULT_OLLAMA_BASE: &str = "http://localhost:11434";
-const DEFAULT_OLLAMA_MODEL: &str = "qwen3.6:latest";
+const DEFAULT_OLLAMA_MODEL: &str = "qwen3.8:latest";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
