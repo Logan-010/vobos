@@ -6,7 +6,7 @@ mod shortcut;
 use crate::cli::Cli;
 use backend::{Command, Event};
 use iced::widget::{
-    button, column, container, markdown, row, scrollable, space, svg, text, text_input,
+    button, column, container, image, markdown, row, scrollable, space, svg, text, text_input,
 };
 use iced::{Alignment, Element, Fill, Font, Size, Subscription, Task, Theme, window};
 use std::time::Duration;
@@ -310,9 +310,9 @@ impl Home {
 
     fn view(&self) -> Element<'_, Message> {
         let header = row![
-            svg(svg::Handle::from_memory(include_bytes!(
-                "../assets/com.seedse.vobos.svg"
-            )))
+            image(image::Handle::from_bytes(
+                &include_bytes!("../assets/icon.png")[..],
+            ))
             .width(30)
             .height(30),
             text("vOBOS").size(20).font(Font {

@@ -102,10 +102,10 @@ Capture and PNG encoding run on a blocking worker so the GUI stays responsive.
 
 ### GUI dependencies
 
-Iced 0.14 has defaults disabled; `tiny-skia`, `tokio`, `svg`, `markdown`, and `advanced`
+Iced 0.14 has defaults disabled; `tiny-skia`, `tokio`, `svg`, `image`, `markdown`, and `advanced`
 are enabled, with `wayland` supplied by the project's default `wayland` feature.
 The GUI uses software rendering, the existing Tokio ecosystem,
-and embedded vector icons, without Iced's X11 or WGPU backends. The existing
+and embedded icons, without Iced's X11 or WGPU backends. The existing
 speech/input dependencies may still use Vulkan or X11 independently.
 
 On Linux, run from a Wayland session with `libwayland-client`, `libxkbcommon`,
@@ -140,14 +140,14 @@ the app's content uses Iced's built-in Kanagawa Dragon theme.
 
 ## Desktop icon
 
-The Nix package installs the desktop entry and scalable application icon.
+The Nix package installs the desktop entry and 256×256 PNG application icon from `assets/icon.png`.
 For a local Cargo build, ensure `vobos` is on your `PATH`, then install them:
 
 ```sh
 install -Dm644 assets/com.seedse.vobos.desktop \
   "$HOME/.local/share/applications/com.seedse.vobos.desktop"
-install -Dm644 assets/com.seedse.vobos.svg \
-  "$HOME/.local/share/icons/hicolor/scalable/apps/com.seedse.vobos.svg"
+install -Dm644 assets/icon.png \
+  "$HOME/.local/share/icons/hicolor/256x256/apps/com.seedse.vobos.png"
 ```
 
 Wayland shells associate the window with this desktop entry to show its icon

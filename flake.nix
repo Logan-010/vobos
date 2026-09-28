@@ -44,10 +44,6 @@
           cmake
           ninja
 
-          shaderc
-          spirv-headers
-          vulkan-headers
-
           llvmPackages.clang
           llvmPackages.libclang
         ];
@@ -61,7 +57,8 @@
           libglvnd
           libgbm
           stdenv.cc.cc.lib
-          vulkan-loader
+          # The default iced/wgpu GUI renderer still uses Vulkan.
+          #vulkan-loader
         ];
       in
       {
@@ -76,13 +73,16 @@
           inherit buildInputs;
 
           # Winit loads these libraries dynamically on Wayland.
-          runtimeDependencies = with pkgs; [ wayland libxkbcommon ];
+          runtimeDependencies = with pkgs; [
+            wayland
+            libxkbcommon
+          ];
 
           postInstall = ''
             install -Dm644 assets/com.seedse.vobos.desktop \
               "$out/share/applications/com.seedse.vobos.desktop"
-            install -Dm644 assets/com.seedse.vobos.svg \
-              "$out/share/icons/hicolor/scalable/apps/com.seedse.vobos.svg"
+            install -Dm644 assets/icon.png \
+              "$out/share/icons/hicolor/256x256/apps/com.seedse.vobos.png"
           '';
 
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
@@ -97,7 +97,6 @@
             git
             just
             bacon
-            vulkan-tools
           ];
 
           RUST_SRC_PATH = "${toolchain}/lib/rustlib/src/rust/library";
